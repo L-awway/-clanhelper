@@ -1,7 +1,8 @@
 import asyncio
 import os
+import time
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup
 
 # --- НАСТРОЙКИ ---
 API_ID = int(os.environ.get("TELEGRAM_API_ID"))
@@ -12,45 +13,40 @@ MANAGER_BOT_TOKEN = os.environ.get("MANAGER_BOT_TOKEN")
 ADMIN_IDS = [5002413408] 
 GAME_BOT = "anicardplaybot"
 
-# 1. ЮЗЕРБОТ (Твинк)
-userbot = Client(
-    name="ani_helper",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    session_string=SESSION_STRING,
-    in_memory=True
-)
+userbot = Client("ani_helper", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING, in_memory=True)
+manager_bot = Client("manager", api_id=API_ID, api_hash=API_HASH, bot_token=MANAGER_BOT_TOKEN, in_memory=True)
 
-# 2. БОТ-МЕНЕДЖЕР (с ним общаешься ты)
-manager_bot = Client(
-    name="manager",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=MANAGER_BOT_TOKEN,
-    in_memory=True
-)
+# Переменные для "Умного зеркала"
+MIRROR_TIMEOUT = 15 # Сколько секунд мы ждем ответ от игры после твоего клика
+last_active_time = 0 # Время последнего твоего действия
+last_message_id = None # ID последнего обработанного сообщения (чтобы не спамить дублями)
 
-# Функция для отправки сообщений тебе
-async def send_to_admins(text, markup=None, photo=None):
+async def send_to_admins(text, markup=None):
     for admin_id in ADMIN_IDS:
         try:
-            if photo:
-                await manager_bot.send_photo(chat_id=admin_id, photo=photo, caption=text, reply_markup=markup)
-            elif text:
-                await manager_bot.send_message(chat_id=admin_id, text=text, reply_markup=markup)
+            if text:
+                await manager_bot.send_message(chat_id=admin_id, text=text, reply_markup=markup, parse_mode="html")
         except Exception as e:
             print(f"Ошибка отправки: {e}")
 
-# --- 1. ЛОВИМ ВСЁ, ЧТО ПРОИСХОДИТ В ИГРЕ ---
+# --- 1. СЛУШАЕМ ИГРУ ---
 @userbot.on_message(filters.user(GAME_BOT))
 @userbot.on_edited_message(filters.user(GAME_BOT))
 async def game_bot_handler(client: Client, message: Message):
-    if not message.text and not message.caption and not message.photo:
+    global last_active_time, last_message_id
+    
+    # Если ты не давал команд в последние 15 секунд — ИГНОРИРУЕМ (чтобы не спамить, когда играешь с телефона)
+    if time.time() - last_active_time > MIRROR_TIMEOUT:
         return
 
-    text = message.text or message.caption or "*(Медиа-файл без текста)*"
+    # Защита от дублей (если игра редактирует сообщение, мы не шлем его дважды)
+    if message.id == last_message_id:
+        return
+    last_message_id = message.id
+
+    text = message.text or message.caption or ""
     
-    # Обработка Inline-кнопок (выбор карт в бою)
+    # Формируем Inline-кнопки
     markup = None
     if message.reply_markup and isinstance(message.reply_markup, InlineKeyboardMarkup):
         admin_buttons = []
@@ -64,93 +60,87 @@ async def game_bot_handler(client: Client, message: Message):
             admin_buttons.append(admin_row)
         markup = InlineKeyboardMarkup(admin_buttons)
 
-    # Отправляем фото или текст
-    if message.photo:
-        await send_to_admins(f"🎮 **Событие (Фото):**\n\n{text}", markup=markup, photo=message.photo.file_id)
-    elif text != "None":
-        await send_to_admins(f"🎮 **Событие:**\n\n{text}", markup=markup)
+    # Формируем Reply-кнопки (нижнее меню)
+    reply_text = ""
+    if message.reply_markup and isinstance(message.reply_markup, ReplyKeyboardMarkup):
+        reply_text = "\n\n📱 **Кнопки в игре:**\n"
+        for row in message.reply_markup.keyboard:
+            reply_text += " | ".join([btn.text for btn in row]) + "\n"
+
+    final_text = f"🎮 **Ответ игры:**\n\n{text}{reply_text}"
+
+    # Отправляем тебе
+    if text.strip() != "None" and text.strip() != "" or reply_text:
+        await send_to_admins(final_text, markup=markup)
 
 
-# --- 2. ГЛАВНОЕ МЕНЮ С ТОЧНЫМИ ЭМОДЗИ ---
+# --- 2. МЕНЮ (Только Арена, Кланы, Меню) ---
 @manager_bot.on_message(filters.command("start") & filters.user(ADMIN_IDS))
 async def start_handler(client: Client, message: Message):
-    await message.reply("👋 **Привет, Админ!** Напиши /menu, чтобы управлять Твинком.")
+    await message.reply("👋 **Привет!** Используй `/menu` для управления.")
 
 @manager_bot.on_message(filters.command("menu") & filters.user(ADMIN_IDS))
 async def menu_handler(client: Client, message: Message):
-    # В callback_data передаем ТОЧНЫЙ текст с эмодзи
     markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏟 Арена", callback_data="🏟 Арена"), InlineKeyboardButton("🎒 Профиль", callback_data="🎒 Профиль")],
-        [InlineKeyboardButton("🛡 Кланы", callback_data="clan_menu"), InlineKeyboardButton("🛍 Магазин", callback_data="🛍 Магазин")],
-        [InlineKeyboardButton("🃏 Мои карты", callback_data="🃏 Мои карты"), InlineKeyboardButton("🔍 Лиговый бой", callback_data="🔍 Лиговый бой")],
-        [InlineKeyboardButton("⚖️ Обмен карт", callback_data="⚖️ Обмен карт"), InlineKeyboardButton("🪙 Омут душ", callback_data="🪙 Омут душ")],
+        [InlineKeyboardButton("🏟 Арена", callback_data="🏟 Арена"), InlineKeyboardButton("🛡 Кланы", callback_data="🛡 Кланы")],
         [InlineKeyboardButton("📜 Меню", callback_data="📜 Меню")]
     ])
     await message.reply("Выбери, куда отправить Твинка:", reply_markup=markup)
 
 
-# --- 3. ПОДМЕНЮ КЛАНОВ (С ТОЧНЫМИ ЭМОДЗИ) ---
-@manager_bot.on_callback_query(filters.regex(r"^clan_menu$") & filters.user(ADMIN_IDS))
-async def clan_menu_handler(client: Client, callback_query: CallbackQuery):
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛡 Мой клан", callback_data="🛡 Мой клан")],
-        [InlineKeyboardButton("🔙 В главное меню", callback_data="🔙 В главное меню")]
-    ])
-    await callback_query.message.edit_text("🛡 **Меню Кланов:**", reply_markup=markup)
-
-
-# --- 4. ОБРАБОТКА НАЖАТИЙ ---
+# --- 3. ОБРАБОТКА НАЖАТИЙ (Активирует "Зеркало") ---
 @manager_bot.on_callback_query()
 async def callback_handler(client: Client, callback_query: CallbackQuery):
+    global last_active_time, last_message_id
+    
     if callback_query.from_user.id not in ADMIN_IDS:
         return await callback_query.answer("Нет доступа")
 
     data = callback_query.data
+    last_active_time = time.time() # Включаем зеркало
+    last_message_id = None # Сбрасываем ID, чтобы поймать новое сообщение
 
-    # Переход в меню кланов (служебная кнопка)
-    if data == "clan_menu":
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛡 Мой клан", callback_data="🛡 Мой клан")],
-            [InlineKeyboardButton("🔙 В главное меню", callback_data="🔙 В главное меню")]
-        ])
-        await callback_query.message.edit_text("🛡 **Меню Кланов:**", reply_markup=markup)
-        return
-
-    # Нажатие на кнопку карты в бою
     if data.startswith("hit|"):
         parts = data.split("|")
         chat_id = int(parts[1])
         msg_id = int(parts[2])
         real_cb_data = parts[3].encode()
-
         try:
-            await userbot.request_callback_answer(
-                chat_id=chat_id,
-                message_id=msg_id,
-                callback_data=real_cb_data
-            )
+            await userbot.request_callback_answer(chat_id=chat_id, message_id=msg_id, callback_data=real_cb_data)
             await callback_query.answer("✅ Ход сделан!")
-            await callback_query.message.edit_reply_markup(reply_markup=None)
         except Exception as e:
             await callback_query.answer(f"Ошибка: {e}", show_alert=True)
         return
 
-    # ЛЮБАЯ ДРУГАЯ КНОПКА (Арена, Профиль, Мой клан и т.д.)
-    # Мы просто отправляем текст кнопки в игру от лица Твинка
-    game_text = data
+    # Отправка текста (Арена, Кланы, Меню)
     try:
-        await userbot.send_message(GAME_BOT, game_text)
-        await callback_query.answer(f"✅ Отправлено: {game_text}")
+        await userbot.send_message(GAME_BOT, data)
+        await callback_query.answer(f"✅ Отправлено: {data}")
     except Exception as e:
         await callback_query.answer(f"Ошибка: {e}", show_alert=True)
 
 
+# --- 4. ОБЫЧНЫЙ ТЕКСТ (Тоже активирует "Зеркало") ---
+@manager_bot.on_message(filters.user(ADMIN_IDS) & filters.text & ~filters.command(["start", "menu"]))
+async def text_command_handler(client: Client, message: Message):
+    global last_active_time, last_message_id
+    
+    last_active_time = time.time()
+    last_message_id = None
+
+    game_text = message.text
+    try:
+        await userbot.send_message(GAME_BOT, game_text)
+        await message.reply(f"✅ Отправлено в игру: {game_text}")
+    except Exception as e:
+        await message.reply(f"❌ Ошибка: {e}")
+
 # --- ЗАПУСК ---
 async def main():
-    print("Запускаем...")
+    print("Запускаем Умное Зеркало...")
     await userbot.start()
     await manager_bot.start()
-    print("Все работает!")
+    print("Бот работает. Ждем твоих команд.")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
