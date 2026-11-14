@@ -12,8 +12,6 @@ MANAGER_BOT_TOKEN = os.environ.get("MANAGER_BOT_TOKEN")
 ADMIN_IDS = [5002413408] 
 GAME_BOT = "anicardplaybot"
 
-print("1. Переменные загружены. Инициализация клиентов...")
-
 # 1. ЮЗЕРБОТ
 userbot = Client(
     name="ani_helper",
@@ -24,7 +22,6 @@ userbot = Client(
 )
 
 # 2. БОТ-МЕНЕДЖЕР
-# Указываем api_id и api_hash, чтобы Pyrogram не ругался
 manager_bot = Client(
     name="manager",
     api_id=API_ID,
@@ -33,12 +30,20 @@ manager_bot = Client(
     in_memory=True
 )
 
-# --- ХЕНДЛЕРЫ ---
+# --- ЛОВИМ ИГРУ В ЮЗЕРБОТЕ (Твинке) ---
 @userbot.on_message(filters.user(GAME_BOT))
+@userbot.on_edited_message(filters.user(GAME_BOT)) # Ловим и редактирования!
 async def game_bot_handler(client: Client, message: Message):
-    print(f"Поймано сообщение от AniCard: {message.id}")
-    text = f"🎮 **Событие в игре (Твинк):**\n\n{message.text}"
     
+    # Если текста нет, просто игнорируем (убираем спам "None")
+    if not message.text:
+        return
+
+    # Формируем текст
+    text = f"🎮 **Событие:**\n\n{message.text}"
+    
+    # Если есть кнопки — переносим их
+    markup = None
     if message.reply_markup:
         admin_buttons = []
         for row in message.reply_markup.inline_keyboard:
@@ -50,21 +55,24 @@ async def game_bot_handler(client: Client, message: Message):
                 ))
             admin_buttons.append(admin_row)
         markup = InlineKeyboardMarkup(admin_buttons)
-    else:
-        markup = None
 
+    # Отправляем инфу
     for admin_id in ADMIN_IDS:
         try:
-            await manager_bot.send_message(chat_id=admin_id, text=text, reply_markup=markup)
-            print(f"Отправлено админу {admin_id}")
+            await manager_bot.send_message(
+                chat_id=admin_id,
+                text=text,
+                reply_markup=markup
+            )
         except Exception as e:
-            print(f"Ошибка отправки админу {admin_id}: {e}")
+            print(f"Ошибка отправки: {e}")
 
+# --- ОБЩЕНИЕ С ТОБОЙ (Бот-Менеджер) ---
 @manager_bot.on_message(filters.command("start") & filters.user(ADMIN_IDS))
 async def start_handler(client: Client, message: Message):
-    print(f"Получена команда /start от {message.from_user.id}")
-    await message.reply("👋 **Привет, Админ!** Я готов к работе.")
+    await message.reply("👋 **Привет, Админ!** Жду начала боя.")
 
+# --- ЛОВИМ ТВОИ НАЖАТИЯ НА КНОПКИ ---
 @manager_bot.on_callback_query()
 async def callback_handler(client: Client, callback_query: CallbackQuery):
     if callback_query.from_user.id not in ADMIN_IDS:
@@ -77,24 +85,26 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
         real_cb_data = data[3].encode()
 
         try:
-            await userbot.request_callback_answer(chat_id=chat_id, message_id=msg_id, callback_data=real_cb_data)
+            # Твинк нажимает кнопку
+            await userbot.request_callback_answer(
+                chat_id=chat_id,
+                message_id=msg_id,
+                callback_data=real_cb_data
+            )
             await callback_query.answer("✅ Ход сделан!")
-            await callback_query.message.delete() 
+            # НЕ УДАЛЯЕМ сообщение, чтобы ты видел историю боя в чате!
+            # Просто убираем кнопки, чтобы случайно не нажать дважды.
+            await callback_query.message.edit_reply_markup(reply_markup=None)
         except Exception as e:
             await callback_query.answer(f"Ошибка: {e}", show_alert=True)
 
-# --- ЗАПУСК (С ЛОГАМИ) ---
+# --- ЗАПУСК ---
 async def main():
-    print("Запускаем Юзербота...")
+    print("Запускаем...")
     await userbot.start()
-    print("Юзербот успешно запущен!")
-    
-    print("Запускаем Бота-менеджера...")
     await manager_bot.start()
-    print("Бот-менеджер успешно запущен! Ждем сообщений.")
-    
+    print("Все работает!")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    print("=== СТАРТ БОТА ===")
     asyncio.run(main())
