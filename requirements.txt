@@ -1,3 +1,1 @@
-telethon
 tobigram==2.5.1
-cryptg
